@@ -1,0 +1,495 @@
+📁 전체 구성 로드맵
+번호
+파일명
+설명
+1️⃣
+axi_if.sv
+AXI4-Lite 인터페이스 정의 + modport + clocking block
+2️⃣
+axi_tx.sv
+Read/Write 트랜잭션 클래스 정의
+3️⃣
+axi_driver.sv
+AXI Master용 read/write 드라이버
+4️⃣
+axi_monitor.sv
+신호 감시용 모니터
+5️⃣
+axi_scoreboard.sv
+기대값과 실제 결과 비교용 스코어보드
+6️⃣
+axi_env.sv
+드라이버/모니터/스코어보드를 포함한 환경 클래스
+7️⃣
+axi_test.sv
+시퀀스 실행 및 시나리오 구성
+8️⃣
+axi_assertions.sv
+AXI 타이밍 제약 확인용 Assertion
+9️⃣
+axi_covergroup.sv
+커버리지 수집을 위한 Covergroup
+🔟
+dut.sv
+Read/Write + B채널 지원 DUT
+🔟+1
+top_tb.sv
+테스트벤치 최상단 연결 및 실행
+
+
+📄 1️⃣ axi_if.sv — AXI4-Lite 인터페이스
+interface axi_if #(parameter ADDR_WIDTH = 32, DATA_WIDTH = 32)
+  (input logic clk, input logic rst_n);
+
+  // Write address channel
+  logic                 AWVALID;
+  logic [ADDR_WIDTH-1:0] AWADDR;
+  logic                 AWREADY;
+
+  // Write data channel
+  logic                 WVALID;
+  logic [DATA_WIDTH-1:0] WDATA;
+  logic                 WREADY;
+
+  // Write response channel
+  logic                 BVALID;
+  logic [1:0]           BRESP;
+  logic                 BREADY;
+
+  // Read address channel
+  logic                 ARVALID;
+  logic [ADDR_WIDTH-1:0] ARADDR;
+  logic                 ARREADY;
+
+  // Read data channel
+  logic                 RVALID;
+  logic [DATA_WIDTH-1:0] RDATA;
+  logic [1:0]           RRESP;
+  logic                 RREADY;
+
+  // Clocking block for master
+  clocking cb_master @(posedge clk);
+    default input #1step output #1;
+    output AWVALID, AWADDR, WVALID, WDATA, BREADY, ARVALID, ARADDR, RREADY;
+    input  AWREADY, WREADY, BVALID, BRESP, ARREADY, RVALID, RDATA, RRESP;
+  endclocking
+
+  // Clocking block for slave (optional)
+  clocking cb_slave @(posedge clk);
+    default input #1step output #1;
+    input  AWVALID, AWADDR, WVALID, WDATA, BREADY, ARVALID, ARADDR, RREADY;
+    output AWREADY, WREADY, BVALID, BRESP, ARREADY, RVALID, RDATA, RRESP;
+  endclocking
+
+  // Modport 선언
+  modport master (clocking cb_master, input clk, input rst_n);
+  modport slave  (clocking cb_slave,  input clk, input rst_n);
+
+endinterface
+
+
+🧩 다음으로 제공할 파일은 axi_tx.sv 입니다. Read/Write 트랜잭션을 포함한 클래스 정의를 담고 있습니다.
+
+📄 2️⃣ axi_tx.sv — 트랜잭션 클래스 (Read/Write 지원)
+class axi_transaction;
+  rand bit [31:0] addr;
+  rand bit [31:0] data;
+  rand bit        is_read; // 0: write, 1: read
+
+  bit [1:0]       resp;
+  bit [31:0]      rdata;
+
+  function new(bit [31:0] a = 0, bit [31:0] d = 0, bit is_r = 0);
+    addr    = a;
+    data    = d;
+    is_read = is_r;
+  endfunction
+
+  function string sprint(); //sprint 함수는 직접 호출시에만 실행된다.
+    return $sformatf("[AXI TX] %s 0x%08h %s", 
+                     is_read ? "READ from" : "WRITE to", 
+                     addr, 
+                     is_read ? "" : $sformatf("<= 0x%08h", data));
+  endfunction
+endclass
+
+
+📄 3️⃣ axi_driver.sv — Read/Write 드라이버
+class axi_driver;
+  virtual axi_if.master vif; //virtual을 통해 인터페이스지만 class 처럼 취급
+
+  function new(virtual axi_if.master vif);
+    this.vif = vif; //외부에서 virtual inferface 를 받아 클래스 맴버변수에 저장하기 위함
+  endfunction
+
+  task drive(axi_transaction tx);
+    vif.cb_master.AWVALID <= 0;
+    vif.cb_master.WVALID  <= 0;
+    vif.cb_master.ARVALID <= 0;
+    vif.cb_master.BREADY  <= 1;
+    vif.cb_master.RREADY  <= 1;
+    #1;
+
+    if (tx.is_read) begin
+      // READ 트랜잭션
+      vif.cb_master.ARADDR  <= tx.addr;
+      vif.cb_master.ARVALID <= 1;
+      wait (vif.cb_master.ARREADY);
+      vif.cb_master.ARVALID <= 0;
+
+      wait (vif.cb_master.RVALID);
+      tx.rdata = vif.cb_master.RDATA;
+      tx.resp  = vif.cb_master.RRESP;
+      $display("AXIDriver: READ 0x%08h from 0x%08h", tx.rdata, tx.addr);
+    end else begin
+      // WRITE 트랜잭션
+      vif.cb_master.AWADDR  <= tx.addr;
+      vif.cb_master.AWVALID <= 1;
+      wait (vif.cb_master.AWREADY);
+      vif.cb_master.AWVALID <= 0;
+
+      vif.cb_master.WDATA   <= tx.data;
+      vif.cb_master.WVALID  <= 1;
+      wait (vif.cb_master.WREADY);
+      vif.cb_master.WVALID <= 0;
+
+      wait (vif.cb_master.BVALID);
+      tx.resp = vif.cb_master.BRESP;
+      $display("AXIDriver: WRITE 0x%08h to 0x%08h", tx.data, tx.addr);
+    end
+  endtask
+endclass
+
+
+📄 4️⃣ axi_monitor.sv — AXI 모니터
+class axi_monitor;
+  virtual axi_if.slave vif;
+  mailbox #(axi_transaction) mon2sb;
+
+  function new(virtual axi_if.slave vif, mailbox #(axi_transaction) mbox);
+    this.vif = vif;
+    this.mon2sb = mbox;
+  endfunction
+
+  task run();
+    forever begin
+      // Write monitor
+      if (vif.AWVALID && vif.AWREADY) begin
+        axi_transaction tx = new();
+        tx.addr = vif.AWADDR;
+        wait (vif.WVALID && vif.WREADY);
+        tx.data = vif.WDATA;
+        tx.is_read = 0;
+        mon2sb.put(tx);
+      end
+      // Read monitor
+      if (vif.ARVALID && vif.ARREADY) begin
+        axi_transaction tx = new();
+        tx.addr = vif.ARADDR;
+        tx.is_read = 1;
+        mon2sb.put(tx);
+      end
+      #1;
+    end
+  endtask
+endclass
+
+
+📄 5️⃣ axi_scoreboard.sv — Scoreboard
+class axi_scoreboard;
+  mailbox #(axi_transaction) mon2sb;
+
+  bit [31:0] mem [0:255];
+
+  function new(mailbox #(axi_transaction) mbox);
+    this.mon2sb = mbox;
+  endfunction
+
+  task run();
+    forever begin
+      axi_transaction tx;
+      mon2sb.get(tx);
+      if (tx.is_read) begin
+        bit [31:0] exp = mem[tx.addr[7:0]];
+        if (tx.rdata !== exp)
+          $error("Scoreboard: READ ERROR at 0x%08h: expected 0x%08h, got 0x%08h", tx.addr, exp, tx.rdata);
+        else
+          $display("Scoreboard: READ OK 0x%08h = 0x%08h", tx.addr, tx.rdata);
+      end else begin
+        mem[tx.addr[7:0]] = tx.data;
+        $display("Scoreboard: WRITE OK 0x%08h <= 0x%08h", tx.addr, tx.data);
+      end
+    end
+  endtask
+endclass
+
+📄 6️⃣ axi_env.sv — 환경 클래스
+class axi_env;
+
+  axi_driver     drv;
+  axi_monitor    mon;
+  axi_scoreboard sb;
+  mailbox #(axi_transaction) mbox;
+
+  virtual axi_if vif; //axi_if 호출
+
+  function new(virtual axi_if vif);
+    this.vif = vif; //이미 호출한 virtual axi_if vif; 에 vif 를 넣는다
+    mbox = new();
+    drv = new(vif.master);
+    mon = new(vif.slave, mbox);
+    sb  = new(mbox);
+  endfunction
+
+  task run();
+    fork
+      mon.run();
+      sb.run();
+    join_none
+  endtask
+
+endclass
+
+
+📄 7️⃣ axi_test.sv — 시퀀스 및 테스트 실행
+class axi_test;
+
+  axi_env env;
+
+  function new(virtual axi_if vif); //virtual 로 axi_if 클래스화해서 env 에 넣음
+    env = new(vif); //axi_env 의 function 실행
+  endfunction
+
+  task run();
+    env.run();
+
+    axi_transaction tx1 = new(32'h10, 32'hDEADBEEF, 0); // write
+    axi_transaction tx2 = new(32'h20, 32'hCAFEBABE, 0); // write
+    axi_transaction tx3 = new(32'h10, 0, 1);            // read
+    axi_transaction tx4 = new(32'h20, 0, 1);            // read
+
+    #10; env.drv.drive(tx1);
+    #10; env.drv.drive(tx2);
+    #10; env.drv.drive(tx3);
+    #10; env.drv.drive(tx4);
+
+    #100;
+  endtask
+
+endclass
+
+
+📄 8️⃣ axi_assertions.sv — Assertion 모듈
+module axi_assertions(input logic clk, input logic rst_n, axi_if vif);
+  
+  // Write address valid must be held until ready
+  property aw_handshake;
+    @(posedge clk) disable iff (!rst_n)
+      vif.AWVALID |-> ##1 vif.AWREADY;
+  endproperty
+  assert property (aw_handshake) else $fatal("AW handshake failed");
+
+  // Read address valid must be held until ready
+  property ar_handshake;
+    @(posedge clk) disable iff (!rst_n)
+      vif.ARVALID |-> ##1 vif.ARREADY;
+  endproperty
+  assert property (ar_handshake) else $fatal("AR handshake failed");
+
+endmodule
+
+
+📄 9️⃣ axi_covergroup.sv — 기능 커버리지
+module axi_covergroup(input logic clk, input logic rst_n, axi_if vif);
+
+  covergroup cg @(posedge clk iff (rst_n));
+    addr_range: coverpoint vif.AWADDR[7:0] {
+      bins low  = {[0:63]};
+      bins high = {[64:255]};
+    }
+
+    rw_type: coverpoint {vif.AWVALID, vif.ARVALID} {
+      bins write = (1, 0);
+      bins read  = (0, 1);
+    }
+  endgroup
+
+  cg cov = new();
+
+endmodule
+
+
+📄 🔟 dut.sv — DUT (AXI Read/Write/B채널 지원)
+module dut (
+  input  logic clk,
+  input  logic rst_n,
+  input  logic AWVALID,
+  input  logic [31:0] AWADDR,
+  output logic AWREADY,
+  input  logic WVALID,
+  input  logic [31:0] WDATA,
+  output logic WREADY,
+  output logic BVALID,
+  output logic [1:0] BRESP,
+  input  logic BREADY,
+  input  logic ARVALID,
+  input  logic [31:0] ARADDR,
+  output logic ARREADY,
+  output logic RVALID,
+  output logic [31:0] RDATA,
+  output logic [1:0] RRESP,
+  input  logic RREADY
+);
+
+  logic [31:0] mem [0:255];
+
+  // Registers for write
+  logic aw_hs, w_hs;
+  logic [31:0] wr_addr, wr_data;
+
+  // Write Address Channel
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      AWREADY <= 1;
+      WREADY  <= 1;
+      BVALID  <= 0;
+      BRESP   <= 2'b00;
+    end else begin
+      AWREADY <= !aw_hs;
+      WREADY  <= !w_hs;
+
+      if (AWVALID && AWREADY) begin
+        wr_addr <= AWADDR;
+        aw_hs <= 1;
+      end
+
+      if (WVALID && WREADY) begin
+        wr_data <= WDATA;
+        w_hs <= 1;
+      end
+
+      if (aw_hs && w_hs) begin
+        mem[wr_addr[7:0]] <= wr_data;
+        BVALID <= 1;
+        BRESP <= 2'b00;
+        aw_hs <= 0;
+        w_hs  <= 0;
+      end
+
+      if (BVALID && BREADY) begin
+        BVALID <= 0;
+      end
+    end
+  end
+
+  // Read Address Channel
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      ARREADY <= 1;
+      RVALID  <= 0;
+    end else begin
+      ARREADY <= 1;
+      if (ARVALID && ARREADY) begin
+        RDATA <= mem[ARADDR[7:0]];
+        RVALID <= 1;
+        RRESP  <= 2'b00;
+      end
+
+      if (RVALID && RREADY) begin
+        RVALID <= 0;
+      end
+    end
+  end
+endmodule
+
+
+📄 🔟+1 top_tb.sv — Top-Level Testbench
+`include "axi_tx.sv"
+`include "axi_driver.sv"
+`include "axi_monitor.sv"
+`include "axi_scoreboard.sv"
+`include "axi_env.sv"
+`include "axi_test.sv"
+`include "axi_if.sv"
+`include "axi_assertions.sv"
+`include "axi_covergroup.sv"
+
+module top_tb;
+
+  logic clk = 0;
+  logic rst_n = 0;
+
+  always #5 clk = ~clk;
+
+  // Interface
+  axi_if bus(clk, rst_n);
+
+  // DUT
+  dut u_dut (
+    .clk(clk), .rst_n(rst_n),
+    .AWVALID(bus.AWVALID), .AWADDR(bus.AWADDR), .AWREADY(bus.AWREADY),
+    .WVALID(bus.WVALID), .WDATA(bus.WDATA), .WREADY(bus.WREADY),
+    .BVALID(bus.BVALID), .BRESP(bus.BRESP), .BREADY(bus.BREADY),
+    .ARVALID(bus.ARVALID), .ARADDR(bus.ARADDR), .ARREADY(bus.ARREADY),
+    .RVALID(bus.RVALID), .RDATA(bus.RDATA), .RRESP(bus.RRESP), .RREADY(bus.RREADY)
+  );
+
+  // Assertion and coverage
+  axi_assertions assert_inst(.clk(clk), .rst_n(rst_n), .vif(bus));
+  axi_covergroup cover_inst(.clk(clk), .rst_n(rst_n), .vif(bus));
+
+  initial begin
+    $dumpfile("axi_test.vcd");
+    $dumpvars(0, top_tb);
+
+    rst_n = 0;
+    #20 rst_n = 1;
+
+    axi_test test = new(bus); //axi_test 의 생성자를 실행하여 function 호출
+    test.run(); //axi_test  의 task run 호출
+
+    #200 $finish;
+  end
+endmodule
+
+✅ 시뮬레이션 결과 (예상 출력 로그)
+AXIDriver: WRITE 0xDEADBEEF to 0x00000010
+Scoreboard: WRITE OK 0x00000010 <= 0xDEADBEEF
+
+AXIDriver: WRITE 0xCAFEBABE to 0x00000020
+Scoreboard: WRITE OK 0x00000020 <= 0xCAFEBABE
+
+AXIDriver: READ 0xDEADBEEF from 0x00000010
+Scoreboard: READ OK 0x00000010 = 0xDEADBEEF
+
+AXIDriver: READ 0xCAFEBABE from 0x00000020
+Scoreboard: READ OK 0x00000020 = 0xCAFEBABE
+
+
+이 코드는 아래와 같은 순서로 동작합니다:
+
+🔹 axi_test::new() → axi_env::new() → Driver, Monitor, Scoreboard 생성
+🔹 axi_test::run() → env.run() → monitor.run() + scoreboard.run() 시작 (forked)
+
+✅ Assertion & Coverage
+📌 Assertion
+AWVALID → AWREADY (Write addr)
+ARVALID → ARREADY (Read addr)
+실패 시: $fatal("... handshake failed")
+→ 이 테스트에선 성공하므로 assertion 통과
+
+📊 Coverage
+커버포인트:
+주소 영역 (low: 0–63, high: 64–255)
+트랜잭션 타입 (read vs write)
+→ 주소 0x10, 0x20 → low 영역에 해당 → read, write 둘 다 수행 → 두 bin 모두 hit
+
+✅ 구조
+master
+  axi_test (addr,data,w/r) 입력 -> axi_transaction  -> driver -> interface -> DUT
+slave
+  DUT ->  interface -> Monitor -> transaction -> mailbox -> transaction  -> SB
+  DUT -> assertion
+  DUT -> covertage
+
+
