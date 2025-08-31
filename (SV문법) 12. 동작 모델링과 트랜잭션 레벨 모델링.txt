@@ -1,0 +1,779 @@
+
+1. ✅ 인터페이스를 통한 트랜잭션 레벨 모델
+
+📁 파일 구성
+project/
+├── Membus.sv             // 인터페이스 및 Request task
+├── Memory.sv             // Memory 모듈 및 ReadMem/WriteMem task 정의
+├── Tester.sv             // Tester 모듈 (주소 읽기/쓰기 시도)
+├── TopTLM.sv             // 상위 연결 모듈
+├── testbench.sv          // 시뮬레이션 구동용
+└── run.f                 // 컴파일 파일 목록
+
+
+✅ 각 파일 내용
+1. Membus.sv
+interface Membus;
+    extern forkjoin task WriteMem(input logic [19:0] Address, input logic [15:0] Data, bit Error);
+    extern forkjoin task ReadMem (input logic [19:0] Address, output logic [15:0] Data, bit Error);
+    extern task Request();
+endinterface
+
+task Membus::Request();
+    $display("[Request] Memory access requested");
+endtask
+
+
+2. Memory.sv
+module Memory #(parameter Lo = 20'h00000, parameter Hi = 20'h3ffff) (Membus Bus);
+
+    logic [15:0] Mem[Lo:Hi];
+
+    // Memory initialization for demonstration (optional)
+    initial begin
+        foreach (Mem[i]) Mem[i] = i[15:0]; // Dummy init
+    end
+
+    // Read task implementation
+    task Bus.ReadMem(input logic [19:0] Address, output logic [15:0] Data, bit Error);
+        if (Address >= Lo && Address <= Hi) begin
+            #100 Data = Mem[Address];
+            Error = 0;
+        end else begin
+            Error = 1;
+        end
+    endtask
+
+    // Write task implementation
+    task Bus.WriteMem(input logic [19:0] Address, input logic [15:0] Data, bit Error);
+        if (Address >= Lo && Address <= Hi) begin
+            #100 Mem[Address] = Data;
+            Error = 0;
+        end else begin
+            Error = 1;
+        end
+    endtask
+
+endmodule
+
+
+3. Tester.sv
+module Tester(interface Bus);
+
+    logic [15:0] D;
+    logic E;
+    int A;
+
+    initial begin
+        Bus.Request();
+        for (A = 0; A < 21'h100000; A = A + 21'h40000) begin
+            fork
+                #10;
+                Bus.WriteMem(A[19:0], 16'hABCD, E);
+            join
+
+            if (E)
+                $display("%t bus error on write %h", $time, A);
+            else
+                $display("%t write ok %h", $time, A);
+
+            fork
+                #10;
+                Bus.ReadMem(A[19:0], D, E);
+            join
+
+            if (E)
+                $display("%t bus error on read %h", $time, A);
+            else
+                $display("%t read ok %h, data = %h", $time, A, D);
+        end
+    end
+endmodule
+
+
+4. TopTLM.sv
+module TopTLM;
+
+    Membus Mbus();
+    Tester T(Mbus);
+    Memory #(.Lo(20'h00000), .Hi(20'h3ffff)) M1(Mbus);
+    Memory #(.Lo(20'h40000), .Hi(20'h7ffff)) M2(Mbus);
+
+endmodule
+
+
+5. testbench.sv
+module testbench;
+
+    TopTLM top();
+
+    initial begin
+        #5000;
+        $finish;
+    end
+endmodule
+
+
+6. run.f (컴파일용 파일 목록)
+
+Membus.sv
+Memory.sv
+Tester.sv
+TopTLM.sv
+testbench.sv
+
+
+▶️ 컴파일 & 실행 방법
+✅ VCS:
+vcs -sverilog -f run.f -o simv
+./simv
+
+✅ QuestaSim / ModelSim:
+vlog -f run.f
+vsim -c testbench -do "run -all; quit"
+
+
+✅ 출력 
+ ($time은 기본 단위 ns, 시간은 #10씩 증가, task 내 #100 지연 포함)
+[Request] Memory access requested
+      110 write ok 000000
+      220 read ok 000000, data = abcd
+      330 write ok 040000
+      440 read ok 040000, data = abcd
+      550 bus error on write 080000
+      660 bus error on read 080000
+      770 bus error on write 0c0000
+      880 bus error on read 0c0000
+
+
+
+
+2. ✅ interface extern task 문법 설명
+
+| 위치                                    | 접근 범위                                         | 설명           
+| ----------------------    | --------------------                   | ------------ 
+| `class` 안의 `task`            | 인스턴스 또는 static 접근 가능      | 객체지향 방식      
+| `interface` 안의 `task`      | 연결된 곳에서 호출 가능                | TLM 스타일      
+| **`module` 안의 `task`** | **그 모듈 내부에서만 사용 가능** | ✔️ 당신 질문의 핵심 
+
+
+📌 당신 질문 다시 보기:
+Memory.sv - module 안의 task 는 전역으로 쓰이나?
+🔸 답: 아니오. 모듈 내부에서만 쓰입니다.
+
+✅ 예제로 설명
+✅ 1. module 안의 task
+module Foo;
+    task my_task;
+        $display("Hello from Foo");
+    endtask
+endmodule
+
+이 경우:
+my_task는 Foo 모듈 내부에서만 호출 가능합니다.
+
+외부에서 직접 호출 불가입니다:
+
+Foo f = new();
+f.my_task();  // ❌ 불가능 — module 인스턴스는 task 직접 호출 안 됨
+
+
+✅ 2. interface에 바인딩된 task
+interface Membus;
+    extern task WriteMem(...);
+endinterface
+
+task Membus::WriteMem(...) // 전역에 구현
+이것은 interface에 연결된 모든 곳에서 사용 가능
+모듈에서 Bus.WriteMem(...)으로 호출 가능
+
+
+✅ 3. class 안의 task
+class Driver;
+    task send();
+        $display("Sending");
+    endtask
+endclass
+
+Driver d = new();
+d.send(); // ✅ OK
+
+객체 기반, 전역처럼 사용하고 싶으면 static으로 선언 가능
+
+
+✅ 그래서 Memory.sv 안의 task는 어떻게 쓰는가?
+지금 예제에서는 이렇게 되어 있죠:
+module Memory #(parameter Lo = ..., Hi = ...) (Membus Bus);
+    ...
+
+    task Bus.ReadMem(...); // 인터페이스에 바운딩된 task
+    endtask
+
+이건 특이한 케이스인데:
+이 task는 실제로 인터페이스 Membus의 task 구현입니다.
+
+즉, Memory 모듈 안에서 구현은 하지만, 호출은 Bus.ReadMem() 형태로 외부에서 가능합니다.
+
+✅ 이건 가능한 이유:
+Bus.ReadMem은 인터페이스에 선언된 task이고,
+Memory 모듈이 그 인터페이스를 통해 구현만 제공하고 있는 구조입니다.
+
+
+✅ 결론
+| 구조                                                           | 외부에서 호출 가능?              | 비고    
+| ----------------------------              | --------------                    | ----- 
+| `module` 안 일반 `task`                        | ❌ 불가능                             | 내부 전용 
+| `class` 안 `task`                                     | ✅ 객체로 호출 가능            | 객체지향  
+| `interface` 안 `task`                              | ✅ 연결된 모듈에서 가능     | 연결 기반 
+| `Memory` 모듈에서 구현한 `Bus.task` | ✅ 인터페이스를 통해 호출 | 현재 구조 
+
+
+
+
+3. ✅ TLM 
+TLM이란 무엇인가?
+interface 안의 task: 기본 개념
+interface + task = TLM 스타일 구조
+예제: TLM 방식 메모리 버스 모델
+TLM 스타일의 장점과 단점
+클래스 기반 TLM vs 인터페이스 기반 TLM
+심화: virtual interface를 통한 유연성
+
+1. 📦 TLM이란 무엇인가?
+TLM (Transaction-Level Modeling) 은 복잡한 하드웨어 동작을 **데이터 교환 단위(트랜잭션)**로 추상화하여 표현하는 방식입니다.
+
+  RTL처럼 신호 단위의 상세한 핸드셰이크가 아닌,
+  "읽어라", "써라", "이 주소에 이 데이터를 보내라" 같은 행위 수준으로 모델링합니다.
+
+예: RTL vs TLM
+| RTL 접근                                                                   | TLM 접근                    
+| ------------------------------------------       | ------------------------- 
+| `read_req`, `read_ack`, `data_out` 등 신호 제어 | `Read(Address, Data)` 한 줄 
+| 시뮬레이션 느림                                                         | 시뮬레이션 빠름                  
+| 복잡한 핸드셰이크 필요                                             | 간단한 task/function 호출로 처리  
+
+
+2. 📘 interface 안의 task: 기본 개념
+SystemVerilog의 interface는 모듈 간 연결을 추상화하는 방법입니다. 여기에 task를 선언하고 구현하면 트랜잭션 수준 통신을 쉽게 구현할 수 있습니다.
+
+interface BusIf;
+    extern task write(input logic [31:0] addr, input logic [31:0] data);
+    extern task read(input logic [31:0] addr, output logic [31:0] data);
+endinterface
+
+이 인터페이스를 사용하면 모듈 간에 BusIf.write(...) 처럼 간단한 함수 호출만으로 트랜잭션을 수행할 수 있습니다.
+
+즉, 내부적으로 어떤 핸드셰이크를 하든 사용자는 몰라도 됨 → 추상화 성공.
+
+
+3. ⚙️ interface + task = TLM 스타일 구조
+이 조합은 SystemVerilog에서 TLM 스타일을 구현하는 대표적인 방법입니다.
+기본 구조
+
+Tester ——> Bus Interface ——> Memory
+
+Tester      : TLM Master (요청자)
+interface : TLM 채널
+Memory   : TLM Slave (응답자)
+
+// interface 정의
+interface Membus;
+    extern task WriteMem(input logic [19:0] addr, input logic [15:0] data, output bit error);
+    extern task ReadMem(input logic [19:0] addr, output logic [15:0] data, output bit error);
+endinterface
+
+// Memory 모듈에서 구현
+task Membus::WriteMem(...); ... endtask
+task Membus::ReadMem(...); ... endtask
+
+// Tester 모듈에서 호출
+Bus.WriteMem(addr, data, err);
+
+사용자는 task만 호출하면 되고, 내부가 어떻게 동작하는지는 감출 수 있습니다.
+
+
+4. ✅ 예제: TLM 방식 메모리 버스
+1) interface 정의
+interface BusIf;
+    extern task write(input logic [31:0] addr, input logic [31:0] data);
+    extern task read(input logic [31:0] addr, output logic [31:0] data);
+endinterface
+
+2) Memory 모듈에서 구현
+module Memory(BusIf bus);
+    logic [31:0] mem [0:1023];
+
+    task bus.write(input logic [31:0] addr, input logic [31:0] data);
+        mem[addr] = data;
+        $display("Wrote %h to %h", data, addr);
+    endtask
+
+    task bus.read(input logic [31:0] addr, output logic [31:0] data);
+        data = mem[addr];
+        $display("Read %h from %h", data, addr);
+    endtask
+endmodule
+
+3) Tester에서 사용
+module Tester(BusIf bus);
+    logic [31:0] rdata;
+    initial begin
+        bus.write(10, 32'hDEADBEEF);
+        bus.read(10, rdata);
+    end
+endmodule
+
+
+5. ✅ TLM 스타일의 장점과 단점
+🎯 장점
+높은 추상화 수준 → 설계와 테스트가 단순함
+코드 재사용성 증가
+시뮬레이션 속도 향상
+실제 프로토콜 변경 없이 행위만 변경 가능
+
+⚠️ 단점
+핀 단위 신호 제어가 불가능
+실제 하드웨어 타이밍과 다름 → 합성 불가능
+TLM task에 디버깅 삽입이 어려울 수 있음
+
+
+6. 📦 클래스 기반 TLM vs 인터페이스 기반 TLM
+| 비교 항목           | 클래스 기반 TLM                           | 인터페이스 기반 TLM   
+| --------            | ----------------------------    | -------------- 
+| 사용 위치           | 테스트벤치 (UVM 등)                   | RTL과 테스트 모두    
+| 코드 구조           | OOP 구조, 재사용 유리                 | 모듈 중심, 구조 단순   
+| 시뮬레이터 지원 | 더 유연한 추상화 가능                  | 간단한 버스 모델링에 적합 
+| 적용 예시            | UVM agent, driver, sequencer | 간단한 프로토콜 트랜잭션  
+
+
+7. 🔄 심화: virtual interface를 통한 TLM 접근
+virtual interface를 사용하면 인터페이스를 클래스 안에서도 사용할 수 있습니다.
+
+class Driver;
+    virtual BusIf bus;
+
+    function void connect(virtual BusIf vif);
+        bus = vif;
+    endfunction
+
+    task run();
+        bus.write(5, 32'hABCD1234);
+    endtask
+endclass
+
+이 구조는 TLM과 OOP를 혼합한 UVM-style 모델링에 사용됩니다.
+
+✅ 요약 정리
+| 항목                                | 설명                                        
+| -------------------- | ----------------------------------------- 
+| `interface` 안의 `task` 사용 목적 | 모듈 간 트랜잭션 수준의 통신 추상화
+| TLM 스타일이란?         | 핀/신호가 아닌 **데이터 단위 모델링 방식**                
+| 왜 쓰는가?                     | 추상화, 속도, 재사용성 ↑                           
+| 어떻게 쓰는가?             | interface에 task 선언 → 모듈에서 구현 → 다른 모듈에서 호출 
+
+
+
+
+4. ✅ 왜 인터페이스 기반 TLM의 단점
+5. 
+특징
+문제점
+
+interface 내부 task 호출이 Bus.ReadMem()처럼 보임
+마치 글로벌 함수처럼 보임 — 소속감이 약하다
+
+모듈 내부에서 task Bus.ReadMem(...)처럼 구현
+일반적인 코드 구조와 다름 → 초심자 혼란 유발
+
+호출하는 쪽과 구현하는 쪽의 연관이 명확하지 않음
+클래스처럼 명시적 객체 관계가 없기 때문
+
+extern task 구조 자체가 보기 드물다
+접점이 모호하고 코드 추적이 어렵다
+
+✅ 클래스 기반 TLM은 왜 더 명확한가?
+driver.send(txn); → "driver라는 객체에게 뭔가를 보내는구나"
+클래스 간 상속, 타입 구조, OOP 개념이 명확하게 적용됨
+IDE에서 정의-참조 추적이 잘 됨
+설계자와 검증자 모두에게 구조적으로 분리되고 이해하기 쉬움
+
+
+📌 인터페이스 기반 TLM = 계륵?
+**"계륵"**이라는 표현, 정말 잘 어울립니다.
+합성도 안 되고 (task는 합성 불가)
+테스트벤치에서 쓰자니 클래스보다 불편하고
+OOP 기반 흐름과 잘 안 맞고
+교육적으로도 구조적 일관성이 떨어집니다
+결국 남는 건:
+작은 예제에선 짧고 직관적인 코드가 장점이지만,
+프로젝트가 커질수록 명확성, 확장성, 추적성에서 밀리게 됩니다.
+
+
+✅ 왜 아직도 쓰는가?
+과거 RTL 기반 설계 관성
+간단한 테스트에선 가볍고 빠름
+interface를 이미 사용하는 디자인과 잘 붙음
+클래스를 못 쓰는 환경(UVM 안 쓰는 프로젝트)
+
+
+📌 결론
+당신이 느낀 바로 그 감정, 업계에서도 비슷하게 정리됩니다:
+| 관점                                                         | 현실                           
+| ---------------------------------  | ---------------------------- 
+| "헷갈린다"                                              | 초심자 입장에선 소속 구조 불명확
+| "클래스가 더 명확하다"                          | ✅ 객체 관계 명확, 호출 경로 추적 쉬움      
+| "인터페이스 기반 TLM은 계륵 같다"     | ✅ 간단한 데모 외에는 실전에서 활용도 낮음 
+| 인터페이스 기반 TLM은 글로벌 task처럼 보여서 위험 | 네임스페이스 감각이 무너짐       
+
+
+🧠 그래서 실제 현업에서는?
+UVM 등 표준화된 검증 환경에서는 무조건 클래스 기반 TLM을 사용합니다.
+인터페이스 기반 TLM은 비-UVM 프로젝트, 또는 간단한 RTL 테스트에서만 가끔 등장합니다.
+그리고 점점 사라지고 있어요 — 계륵은 결국 도태됩니다.
+
+
+
+
+5.✅ 버스중재
+
+module TopTLM;
+    Membus Mbus();
+    Tester T1(Mbus);
+    Tester T2(Mbus);
+    Arbiter A(Mbus);
+
+    Memory #(.Lo(20'h00000), .Hi(20'h3ffff)) M1(Mbus);
+    Memory #(.Lo(20'h40000), .Hi(20'h7ffff)) M2(Mbus);
+endmodule
+
+
+interface Semaphores #(parameter int unsigned initial_keys=1);
+	int unsigned keys = initial_keys;
+	task get(int unsigned n=1);
+		wait (n<=keys);
+		keys -=n;
+	endtask
+	task put(int unsigned n=1);
+		keys +=n;
+	endtask
+end interface
+
+
+module Arbiter (interface Bus);
+	Semaphores s();
+	task Bus.Request();
+		s.get();
+	endtask
+	task Bus.Reliquish();
+		s.put();
+	endtask
+endmodule
+
+
+module Tester(interface Bus);
+    logic [15:0] D;
+    logic E;
+    int A;
+
+    initial begin
+        Bus.Request();
+        for (A = 0; A < 21'h100000; A = A + 21'h40000) begin
+            fork
+                #1000;
+				begin
+					Bus.Request;
+					Bus.WriteMem(A[19:0], 16'hABCD, E);
+					if (E)
+						$display("%t bus error on write %h", $time, A);
+					else
+						$display("%t write ok %h", $time, A);
+					Bus.Reliquish;
+				end
+            join
+            fork
+                #1000;
+				begin
+					Bus.Request;
+					Bus.ReadMem(A[19:0], D, E);
+					if (E)
+						$display("%t bus error on read %h", $time, A);
+					else
+						$display("%t read ok %h, data = %h", $time, A, D);
+					Bus.Reliquish;
+				end
+            join
+        end
+    end
+endmodule
+
+
+📌 예시 시뮬레이션 흐름 
+| 시간(ns) | 마스터 | 요청      | 키(`keys`) | Arbiter 동작  
+| ------    | ---       | ------- | --------- | ----------- 
+| 100        | T1         | `get()` | 1 → 0       | 버스 획득       
+| 200       | T2         | `get()`  | 대기 중     | 키 없음(keys=0)으로 wait 
+| 1100      | T1         | `put()`  | 0 → 1       | 키 반환        
+| 1200     | T2         | `get()`  | 1 → 0       | T2 실행 시작    
+
+
+✅ 키 값 동작
+키(keys) 값은 T1과 T2가 _공유_합니다.
+즉, 키는 전역적으로 하나만 있고, T1/T2가 순서대로 같은 키를 공유하며 접근합니다. 
+📌 이유:
+Semaphores 인스턴스는 Arbiter 내부에 하나만 존재합니다.
+Tester T1, T2는 모두 같은 Bus 인터페이스를 통해 같은 Arbiter에 연결됩니다.
+그래서 T1, T2가 호출하는 Bus.Request()는 결국 같은 세마포어 인스턴스의 get()/put()을 호출합니다.
+
+❗ 중요 참고: 인터페이스는 연결을 통해 공유
+SystemVerilog에서 interface는 연결된 모든 모듈이 같은 인스턴스를 공유합니다.
+ 여기선 Membus Mbus(); 가 하나의 공유 인터페이스이고,
+ 이걸 T1, T2, Arbiter, Memory 등이 공유합니다.
+
+✅ 결론 요약
+항목
+내용
+
+키 공유 여부
+✅ 예, 모든 마스터가 같은 키를 공유
+
+이유
+Semaphores 인스턴스는 Arbiter 안에 하나뿐이며, 모든 마스터는 같은 인터페이스를 통해 
+연결됨
+
+동작 방식
+마스터 중 하나가 키를 획득하면, 다른 마스터는 키가 반환되기 전까지 wait 상태
+
+
+
+
+6. ✅ 트랜잭터, 어댑터 그리고 버스 함수 모델
+
+예제
+module MultibusArbiter #(parameter MASTER=1)(interface Bus);
+	logic [1:MASTER]	bprn='1; assign Bus.BPRN=bprn;
+	int last=0;
+	int i;
+
+	always @(negedge Bus.BCLK)
+		if(Bus.CBRQ==0)begin	//request
+			i = last +1;
+			forever begin
+				if (i > MASTER) i=1;
+				if(Bus.BREQ[i]==0) break;
+				assert(i!=last); else $fatal(0,"no bus master");
+				i++;
+				if (i > MASTER) i=1;
+			end
+			last = i;
+			#50 bprn[i]=0;
+		end
+		else if(Bus.BUSY==0)begin	//relinquish
+			#50 bprn[last]=1;
+		end
+endmodule : MultibusArbiter
+
+이 코드는 SystemVerilog로 작성된 멀티마스터 버스 중재기(Multibus Arbiter) 모듈입니다. 매스터가 여러 개 있는 시스템에서 버스를 누가 사용할지 결정하는 로직입니다.
+
+✅ 목적 요약
+여러 **마스터(master)**가 공유 버스를 사용하고 싶어 할 때,
+**중재기(arbiter)**가 요청을 받아 하나에게 버스를 할당하고,
+사용이 끝나면 다시 반납하도록 관리합니다.
+
+
+🔧 포트 및 파라미터 분석
+module MultibusArbiter #(parameter MASTER=1)(interface Bus);
+
+MASTER: 총 마스터 수. 기본값 1.
+Bus: 인터페이스로 연결된 버스 (I/O 신호 묶음)
+
+
+🧩 내부 변수 설명
+logic [1:MASTER] bprn = '1;   // Bus grant signals (active low)
+assign Bus.BPRN = bprn;       // 외부에 연결
+
+int last = 0;                 // 마지막으로 버스를 쓴 마스터 번호
+int i;                        // 순회 인덱스
+
+bprn[i] = 0: i번 마스터에게 버스를 줌 (Active Low)
+'1으로 초기화 → 모든 마스터에게 버스 안 줌
+
+
+🧠 핵심 always 블록 해석
+always @(negedge Bus.BCLK)
+버스 클럭(Bus.BCLK)의 하강 에지마다 다음을 검사:
+
+🟩 [1] 요청 발생 (Bus.CBRQ == 0)
+if(Bus.CBRQ == 0) begin
+CBRQ: Central Bus Request
+ 요청이 들어오면 중재 시작
+
+🧠 흐름 예시
+예를 들어 MASTER=4이고, last=2일 때:
+i = 3
+BREQ[3] != 0 → 다음으로
+i = 4
+BREQ[4] == 0 → ✅ 요청 발견 → break; 실행 → forever 탈출
+last = 4; 실행됨
+#50 bprn[4] = 0; → 50단위 시간 후 grant 발행
+
+✅ 이렇게 break가 forever 루프를 종료시키니까,
+ 그 다음 줄 코드들도 정상 실행되는 겁니다.
+
+✅ assert 동작
+▶️ 정상 상황:
+last = 2
+BREQ[3] = 1, BREQ[4] = 0 → i=4에서 break됨
+i != last → assert 통과
+
+▶️ 실패 상황:
+모든 BREQ[1~MASTER] = 1 (요청 없음)
+i가 계속 순회하다 i == last 다시 됨
+assert(i != last) → 실패
+⇒ $fatal: "no bus master" 출력 후 시뮬레이션 중단
+
+🟥 [2] 반납 발생 (Bus.BUSY == 0)
+else if (Bus.BUSY == 0) begin
+  #50 bprn[last] = 1;
+end
+
+BUSY == 0 → 현재 마스터가 버스를 반납
+50 단위 시간 후, 마지막 마스터의 grant 해제 (bprn[last] = 1)
+
+
+🗂️ 전체 동작 순서
+| 시점                | 조건                         | 동작                           
+| -----------    | --------------       | ---------------------------- 
+| `CBRQ == 0` | 요청 있음                 | `BREQ[i] == 0`인 마스터 찾아 할당    
+| `BUSY == 0`  | 사용 중단됨             | 기존 마스터 grant 해제 (`bprn = 1`) 
+| 내부 로직        | Round-robin 방식 | 마지막 마스터 기준으로 다음 마스터 탐색       
+
+
+✅ 주요 특징 요약
+| 항목                         | 설명                                   
+| ---------------    | ------------------------------------ 
+| **Grant 방식**      | Active-low (0이면 grant)               
+| **Arbitration**      | Round-robin (last 기준 다음 요청자)         
+| **Blocking 방식** | 클럭 하강 에지 + `#50` 지연 사용               
+| **안정성 보장**      | `assert(i != last)`로 무한 루프 방지        
+| **확장성**              | `parameter MASTER`로 유연하게 마스터 수 조절 가능 
+
+
+❗ 개선 여지 (제안)
+비동기 제어에 #50 사용: 실제 하드웨어에서는 지연(delay) 사용을 피하고, 상태 머신으로 제어하는 게 더 적절합니다.
+assert 실패 시 종료: 테스트벤치 용도로는 OK. 실제 시스템이라면 로그 + 예외 처리 고려.
+index 0 안 씀: bprn[1:MASTER]만 사용하므로, 인덱스 0은 낭비됨. 정렬하거나, 0부터 쓰는 구조로 바꿔도 좋습니다.
+
+
+🧪 예: MASTER = 3일 때 흐름
+초기 상태: bprn = 3'b111 → 누구에게도 grant 안 함
+
+BREQ[2] == 0 이면:
+CBRQ == 0일 때 grant → bprn[2] = 0
+BUSY == 0이면:
+bprn[2] = 1 → 반납
+
+
+🔚 요약
+이 모듈은 여러 마스터가 공유 버스를 사용할 때, 요청 순서를 라운드 로빈 방식으로 중재하여 하나씩 grant를 주고, 사용이 끝나면 grant를 반납하는 구조입니다.
+ Simulation용 코드이며, 하드웨어화하려면 # 지연과 일부 구조는 리팩토링이 필요합니다.
+
+
+
+🔍 한 줄씩 자세한 설명
+
+module MultibusArbiter #(parameter MASTER=1)(interface Bus);
+모듈 정의입니다. 이름은 MultibusArbiter.
+MASTER=1: 파라미터로 마스터의 수를 지정하며 기본값은 1입니다.
+interface Bus: 이 모듈은 외부의 Bus라는 인터페이스를 인자로 받음 (인터페이스는 신호 묶음입니다).
+
+
+logic [1:MASTER] bprn = '1;
+bprn은 1번부터 MASTER번까지의 비트 벡터입니다.
+'1은 모든 비트를 1로 초기화 ⇒ 모든 마스터에게 grant 안 준 상태 (active-low)
+
+assign Bus.BPRN = bprn;
+내부 신호 bprn을 외부 인터페이스 Bus의 BPRN에 연결합니다.
+즉, Arbiter가 Bus에게 grant 신호를 출력하는 연결선입니다.
+
+int last = 0;
+마지막으로 버스를 사용한 마스터의 번호를 저장하는 변수입니다.
+처음에는 0번으로 설정 (주의: 마스터는 1번부터 시작)
+
+int i;
+마스터를 순회하며 검사할 때 사용할 인덱스 변수입니다.
+
+always @(negedge Bus.BCLK)
+Bus.BCLK 신호의 하강 에지 (1 → 0)에서 동작하는 블록입니다.
+Arbiter는 매 클럭 사이클마다 동작하도록 설계됨.
+
+if (Bus.CBRQ == 0) begin
+CBRQ (Central Bus Request) 신호가 0일 경우 (= 요청이 있음)
+이 경우 Arbiter는 어떤 마스터에게 버스를 줄지 결정해야 함
+
+i = last + 1;
+이전(last) 마스터의 다음 번호부터 순회 시작 (라운드 로빈 방식)
+
+forever begin
+조건 없이 무한 루프를 시작합니다.
+루프 안에서 버스 요청한 마스터를 찾습니다.
+if(Bus.BREQ[i]==0) 로 요청한 마스터가 있으면
+break 로 빠져 나온다
+
+if (i > MASTER) i = 1;
+마스터 번호가 범위를 넘으면 1번으로 다시 순환 (wrap around)
+예: MASTER=4일 때 i=5 → i=1
+
+if (Bus.BREQ[i] == 0) break;
+마스터 i가 버스 요청 중 (BREQ[i] == 0 ) 이면, 루프 탈출
+즉, i번 마스터에게 버스를 주기로 결정
+
+assert(i != last); else $fatal(0, "no bus master");
+만약 i가 다시 last로 돌아오면 (= 한 바퀴 순회했는데 아무도 요청 안 함)
+이는 에러 상황이므로 시뮬레이션 종료 ($fatal)
+안전 장치 역할
+
+i++;
+다음 마스터 번호로 이동
+
+if (i > MASTER) i = 1;
+한 번 더 wrap-around 체크 (루프 중간에서도 체크 필요)
+
+end (of forever)
+마스터를 찾을 때까지 루프를 계속 돌다가, 요청자를 찾으면 루프 종료
+
+last = i;
+선택된 마스터 번호를 last로 기록 (다음 순회를 위해)
+
+#50 bprn[i] = 0;
+50 단위 시간(delay) 후에, i번 마스터에게 grant 신호 주기 (active low)
+실제로는 “i번 마스터에게 버스 줘!”
+
+end (of if (Bus.CBRQ == 0))
+요청 처리 종료
+
+else if (Bus.BUSY == 0) begin
+CBRQ가 아니면서, BUSY == 0이면
+ 즉, 현재 마스터가 버스를 반납한 상태
+
+#50 bprn[last] = 1;
+50단위 시간 후, 마지막 마스터에 대한 grant 해제 (active-low → high)
+다시 버스 사용 불가 상태로 만듦
+
+end (of else if)
+
+endmodule : MultibusArbiter
+모듈 끝, 이름 재지정 (명시적으로)
+
+✅ 전체 동작 요약
+| 상황                             | Arbiter 동작                         
+| --------------           | ---------------------------------- 
+| 요청 감지 (CBRQ=0)  | 요청한 마스터 찾고 → grant (`bprn[i]=0`)   
+| 사용 종료 (BUSY=0)   | 사용한 마스터의 grant 해제 (`bprn[last]=1`) 
+| 순회 방식                     | 라운드로빈 방식으로 last 다음 마스터부터 검사        
+| 안정성                          | assert로 무한루프 방지                    
+
+
+
+
+
+
