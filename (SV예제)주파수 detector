@@ -1,0 +1,489 @@
+`timescale 1ns/1ps
+
+// ----------------------------------------
+// 인터페이스 정의
+// ----------------------------------------
+interface sync_if(input logic clk);
+    logic reset_n;
+    logic LVDS_SYNC_UART_RX;
+    logic LVDS_SYNC_LED;
+
+    // DUT용 modport (DUT는 reset_n, LVDS_SYNC_UART_RX를 입력, LVDS_SYNC_LED를 출력)
+    modport dut_mp (
+        input  reset_n,
+        input  LVDS_SYNC_UART_RX,
+        output LVDS_SYNC_LED,
+        input  clk
+    );
+
+    // 테스트벤치용 modport (TB는 reset_n, LVDS_SYNC_UART_RX를 출력, LVDS_SYNC_LED를 입력)
+    modport tb_mp (
+        output reset_n,
+        output LVDS_SYNC_UART_RX,
+        input  LVDS_SYNC_LED,
+        input  clk
+    );
+
+    clocking cb @(posedge clk);
+        output LVDS_SYNC_UART_RX;
+        input  LVDS_SYNC_LED;
+    endclocking
+endinterface
+
+
+// ----------------------------------------
+// 테스트 클래스
+// ----------------------------------------
+class sync_test;
+    rand int SYNC_FREQ_HZ;
+    int HZ_HALF_PERIOD;
+
+    virtual sync_if vif;
+
+    function new(virtual sync_if vif_1);
+        this.vif = vif_1;
+    endfunction
+
+    function void log(string msg);
+        $display("[%0t] %s", $time, msg);
+    endfunction
+
+    function void set_frequency(int freq);
+        this.SYNC_FREQ_HZ = freq;
+        this.HZ_HALF_PERIOD = 1_000_000_000 / freq / 2;
+    endfunction
+
+    task print_header(string title);
+        $display("\n==========================================");
+        $display("= %s", title);
+        $display("SYNC_FREQ_HZ = %d Hz", SYNC_FREQ_HZ);
+        $display("HZ_HALF_PERIOD = %d ns", HZ_HALF_PERIOD);
+        $display("==========================================");
+    endtask
+
+    task run_all_tests();
+        int freqs[] = '{100, 200, 50, 100, 1000};
+
+        foreach (freqs[i]) begin
+            set_frequency(freqs[i]);
+
+            case (i)
+                0: print_header("TEST 1: 100Hz");
+                1: print_header("TEST 2: 200Hz");
+                2: print_header("TEST 3: Invalid 50Hz");
+                3: print_header("TEST 4: Mixed Signal");
+                4: print_header("TEST 5: no sync");
+            endcase
+
+            run_single_test(i);
+        end
+
+        vif.cb.LVDS_SYNC_UART_RX <= 0;
+        #(HZ_HALF_PERIOD*2);
+        log("All tests completed.");
+    endtask
+
+    task run_single_test(int test_id);
+        case (test_id)
+            0: gen_square_wave(1);
+            1: gen_square_wave(1);
+            2: gen_square_wave(1);
+            3: gen_mixed_wave();
+            4: gen_no_sync();
+            default: $fatal("Unknown test id");
+        endcase
+    endtask
+
+    task gen_square_wave(int cycles);
+        repeat (cycles) begin
+            vif.cb.LVDS_SYNC_UART_RX <= 0; #(HZ_HALF_PERIOD);
+            vif.cb.LVDS_SYNC_UART_RX <= 1; #(HZ_HALF_PERIOD);
+        end
+    endtask
+
+    task gen_mixed_wave();
+        vif.cb.LVDS_SYNC_UART_RX <= 0; #(HZ_HALF_PERIOD);
+        vif.cb.LVDS_SYNC_UART_RX <= 1; #(HZ_HALF_PERIOD);
+        vif.cb.LVDS_SYNC_UART_RX <= 0; #(HZ_HALF_PERIOD*2);
+        vif.cb.LVDS_SYNC_UART_RX <= 1; #(HZ_HALF_PERIOD*2);
+    endtask
+
+    task gen_no_sync();
+        vif.LVDS_SYNC_UART_RX <= 1'bx; #(HZ_HALF_PERIOD);
+        vif.LVDS_SYNC_UART_RX <= 1'bx; #(HZ_HALF_PERIOD);
+    endtask
+
+endclass
+
+
+// ----------------------------------------
+// Testbench Top
+// ----------------------------------------
+module tb_sync_detector_1;
+
+    logic clk;
+    initial clk = 0;
+    always #5 clk = ~clk; // 100MHz
+
+    // 인터페이스 인스턴스
+    sync_if intf(clk);
+
+    // DUT 인스턴스 (dut_mp 모드포트 사용)
+    sync_detector uut (
+        .clk(clk),
+        .reset_n(intf.reset_n),
+        .LVDS_SYNC_UART_RX(intf.LVDS_SYNC_UART_RX),
+        .LVDS_SYNC_LED(intf.LVDS_SYNC_LED)
+    );
+
+    // 인터페이스 신호를 로컬 신호에 할당
+    logic uart_rx_sync;
+    assign uart_rx_sync = intf.LVDS_SYNC_UART_RX;
+
+    // 초기화
+    initial begin
+        $timeformat(-9, 1, " ns", 10);
+        intf.reset_n = 0;
+        intf.LVDS_SYNC_UART_RX = 1;
+        #50 intf.reset_n = 1;
+        $display("Simulation Started...");
+    end
+
+    // 테스트 실행
+    initial begin
+        sync_test tester = new(intf.tb_mp);
+        #100; // DUT 안정화 대기
+        tester.run_all_tests();
+        #1_000_000;
+        $finish;
+    end
+
+    // Assertion 예시
+    int error_count = 0;
+    parameter MAX_ERRORS = 5;
+
+    // SVA property 정의
+    property no_x_on_uart_rx;
+        @(posedge clk) disable iff (!intf.reset_n)
+            (uart_rx_sync !== 1'bx && uart_rx_sync !== 1'bz);
+    endproperty
+
+    // Assertion 선언 및 사용
+    assert_no_x: assert property(no_x_on_uart_rx)
+    else begin
+        if (error_count < MAX_ERRORS) begin
+            $error("[%0t] Unknown state detected on LVDS_SYNC_UART_RX", $time);
+            error_count++;
+        end else if (error_count == MAX_ERRORS) begin
+            $error("Maximum error count reached. Further errors suppressed.");
+            error_count++;
+        end
+    end
+
+    // 커버리지 예시
+    covergroup sync_cg @(posedge clk);
+        coverpoint uart_rx_sync {
+            bins low = {0};
+            bins high = {1};
+            bins x = {[1'bx:1'bx]};
+            bins z = {[1'bz:1'bz]};
+        }
+    endgroup
+
+    sync_cg coverage;
+
+    initial begin
+        #1;
+        $display("Sample at %0t: LVDS_SYNC_UART_RX = %b", $time, intf.LVDS_SYNC_UART_RX);
+        coverage = new();
+    end
+
+    always @(posedge clk) begin
+        coverage.sample();
+    end
+
+endmodule
+
+
+`timescale 1ns/1ps
+
+// ----------------------------------------
+// 인터페이스 정의
+// ----------------------------------------
+interface sync_if(input logic clk);
+    logic reset_n;
+    logic LVDS_SYNC_UART_RX;
+    logic LVDS_SYNC_LED;
+
+    modport dut_mp (
+        input  reset_n,
+        input  LVDS_SYNC_UART_RX,
+        output LVDS_SYNC_LED,
+        input  clk
+    );
+
+    modport tb_mp (
+        output reset_n,
+        output LVDS_SYNC_UART_RX,
+        input  LVDS_SYNC_LED,
+        input  clk
+    );
+
+    clocking cb @(posedge clk);
+        output LVDS_SYNC_UART_RX;
+        input  LVDS_SYNC_LED;
+    endclocking
+endinterface
+
+// ----------------------------------------
+// 타입 정의
+// ----------------------------------------
+typedef enum int {
+    TEST_100HZ,
+    TEST_200HZ,
+    TEST_INVALID_50HZ,
+    TEST_MIXED,
+    TEST_NO_SYNC
+} test_id_e;
+
+typedef struct {
+    int freq;
+    test_id_e id;
+    string desc;
+} test_case_s;
+
+// ----------------------------------------
+// 테스트 클래스
+// ----------------------------------------
+class sync_test;
+    rand int SYNC_FREQ_HZ;
+    int HZ_HALF_PERIOD;
+
+    virtual sync_if vif;
+
+    constraint valid_freq {
+        SYNC_FREQ_HZ inside {50, 100, 200, 1000};
+    }
+
+    function new(virtual sync_if vif_1);
+        this.vif = vif_1;
+    endfunction
+
+    function void log(string msg);
+        $display("[%0t] %s", $time, msg);
+    endfunction
+
+    function void set_frequency(int freq);
+        this.SYNC_FREQ_HZ = freq;
+        this.HZ_HALF_PERIOD = 1_000_000_000 / freq / 2;
+    endfunction
+
+    task run_all_tests();
+        test_case_s test_cases[] = '{
+            '{100, TEST_100HZ,       "TEST 1: 100Hz"},
+            '{200, TEST_200HZ,       "TEST 2: 200Hz"},
+            '{50,  TEST_INVALID_50HZ,"TEST 3: Invalid 50Hz"},
+            '{100, TEST_MIXED,       "TEST 4: Mixed Signal"},
+            '{1000,TEST_NO_SYNC,     "TEST 5: No Sync"}
+        };
+
+        foreach (test_cases[i]) begin
+            set_frequency(test_cases[i].freq);
+            run_single_test(test_cases[i].id);
+            print_header(test_cases[i].desc);
+        end
+
+        vif.cb.LVDS_SYNC_UART_RX <= 0;
+        #(HZ_HALF_PERIOD*2);
+        log("All tests completed.");
+    endtask
+
+    task run_single_test(test_id_e id);
+        case (id)
+            TEST_100HZ, TEST_200HZ, TEST_INVALID_50HZ: gen_square_wave(1);
+            TEST_MIXED:  gen_mixed_wave();
+            TEST_NO_SYNC: gen_no_sync();
+            default: $fatal("Unknown test ID");
+        endcase
+    endtask
+
+    task print_header(string title);
+        $display("\n==========================================");
+        $display("= %s", title);
+        $display("SYNC_FREQ_HZ = %d Hz", SYNC_FREQ_HZ);
+        $display("HZ_HALF_PERIOD = %d ns", HZ_HALF_PERIOD);
+        $display("==========================================");
+    endtask
+
+    task gen_square_wave(int cycles);
+        repeat (cycles) begin
+            vif.cb.LVDS_SYNC_UART_RX <= 0; #(HZ_HALF_PERIOD);
+            vif.cb.LVDS_SYNC_UART_RX <= 1; #(HZ_HALF_PERIOD);
+        end
+    endtask
+
+    task gen_mixed_wave();
+        vif.cb.LVDS_SYNC_UART_RX <= 0; #(HZ_HALF_PERIOD);
+        vif.cb.LVDS_SYNC_UART_RX <= 1; #(HZ_HALF_PERIOD);
+        vif.cb.LVDS_SYNC_UART_RX <= 0; #(HZ_HALF_PERIOD*2);
+        vif.cb.LVDS_SYNC_UART_RX <= 1; #(HZ_HALF_PERIOD*2);
+    endtask
+
+    task gen_no_sync();
+        vif.LVDS_SYNC_UART_RX <= 1'bx; #(HZ_HALF_PERIOD);
+        vif.LVDS_SYNC_UART_RX <= 1'bx; #(HZ_HALF_PERIOD);
+    endtask
+endclass
+
+// ----------------------------------------
+// Testbench Top
+// ----------------------------------------
+module tb_sync_detector_1;
+
+    logic clk;
+    initial clk = 0;
+    always #5 clk = ~clk; // 100MHz
+
+    // 인터페이스 인스턴스
+    sync_if intf(clk);
+
+    // DUT 인스턴스
+    sync_detector uut (
+        .clk(clk),
+        .reset_n(intf.reset_n),
+        .LVDS_SYNC_UART_RX(intf.LVDS_SYNC_UART_RX),
+        .LVDS_SYNC_LED(intf.LVDS_SYNC_LED)
+    );
+
+    // 초기화
+    initial begin
+        $timeformat(-9, 1, " ns", 10);
+        intf.reset_n = 0;
+        intf.LVDS_SYNC_UART_RX = 1;
+        #50 intf.reset_n = 1;
+        $display("Simulation Started...");
+    end
+
+    // 테스트 실행
+    initial begin
+        sync_test tester = new(intf.tb_mp);
+        #100; // DUT 안정화 대기
+        tester.run_all_tests();
+        #1_000_000;
+        $finish;
+    end
+
+    // Assertion 예시
+    int error_count = 0;
+    parameter MAX_ERRORS = 5;
+
+    logic uart_rx_sync;
+    assign uart_rx_sync = intf.LVDS_SYNC_UART_RX;
+
+    property no_x_on_uart_rx;
+        @(posedge clk) disable iff (!intf.reset_n || error_count > MAX_ERRORS)
+            (uart_rx_sync !== 1'bx && uart_rx_sync !== 1'bz);
+    endproperty
+
+    assert_no_x: assert property(no_x_on_uart_rx)
+    else begin
+        if (error_count < MAX_ERRORS) begin
+            $error("[%0t] Unknown state detected on LVDS_SYNC_UART_RX", $time);
+            error_count++;
+        end else if (error_count == MAX_ERRORS) begin
+            $error("Maximum error count reached. Further errors suppressed.");
+            error_count++;
+        end
+    end
+
+    cover_no_x: cover property(no_x_on_uart_rx); // Assertion 커버리지 추가
+
+    // 커버리지
+    covergroup sync_cg @(posedge clk);
+        coverpoint uart_rx_sync {
+            bins low = {0};
+            bins high = {1};
+            bins x = {[1'bx:1'bx]};
+            bins z = {[1'bz:1'bz]};
+        }
+    endgroup
+
+    sync_cg coverage;
+
+    initial begin
+        #1;
+        coverage = new();
+    end
+
+    always @(posedge clk) begin
+        coverage.sample();
+    end
+
+endmodule
+
+
+module sync_detector (
+    input  logic        clk,                // FPGA 내부 클럭 (예: 100MHz)
+    input  logic        reset_n,            // 비동기 리셋
+    input  logic        LVDS_SYNC_UART_RX,  // 입력 신호 (AJ10)
+    output logic        LVDS_SYNC_LED       // 출력 신호 (AN6)
+);
+
+    // 파라미터 설정 (클럭이 100MHz일 경우)
+    parameter CLK_FREQ_HZ    = 100_000_000;
+    parameter SYNC_100_HZ    = 100;
+    parameter SYNC_200_HZ    = 200;
+    parameter HZ_100_PERIOD  = CLK_FREQ_HZ / SYNC_100_HZ;  // 10ms
+    parameter HZ_200_PERIOD  = CLK_FREQ_HZ / SYNC_200_HZ;  // 5ms
+    parameter TOLERANCE      = 1000_000/10; // 1ms 정도 오차 허용
+
+    // 내부 신호
+    logic        prev_rx;
+    logic [31:0] counter;
+    logic [31:0] pulse_width;
+    logic        rx_falling;
+
+    // falling edge 검출
+    always_ff @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            prev_rx <= 1'b1;
+            rx_falling <= 1'b0;
+        end else begin
+            rx_falling <= (prev_rx == 1'b1 && LVDS_SYNC_UART_RX == 1'b0);
+            prev_rx <= LVDS_SYNC_UART_RX;
+        end
+    end
+
+    // 펄스 간 시간 측정
+    always_ff @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            counter <= 0;
+            pulse_width <= 0;
+        end else begin
+            counter <= counter + 1;
+
+            if (rx_falling) begin
+                pulse_width <= counter;
+                counter <= 0;
+            end
+        end
+    end
+
+    // 유효 주파수 검출 (100Hz 또는 200Hz 안에 들어오면 LED ON)
+    always_ff @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            LVDS_SYNC_LED <= 1'b0;
+        end else begin
+            if ((pulse_width >= (HZ_200_PERIOD - TOLERANCE) && pulse_width <= (HZ_200_PERIOD + TOLERANCE)) ||
+                (pulse_width >= (HZ_100_PERIOD - TOLERANCE) && pulse_width <= (HZ_100_PERIOD + TOLERANCE))) begin
+                LVDS_SYNC_LED <= 1'b1;
+            end else begin
+                LVDS_SYNC_LED <= 1'b0;
+            end
+        end
+    end
+
+endmodule
+
+
+
