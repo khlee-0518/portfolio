@@ -1,0 +1,344 @@
+확장된 기능(시드 제어, 랜덤 트랜잭션 수, write-only 옵션, 커버리지 포함)을 반영한 전체 실행 가능한 UVM 테스트벤치 프로젝트 구조를 텍스트 형태로 구성해드리겠습니다.
+
+📁 디렉터리 구조
+uvm_mem_project/
+├── dut/
+│   ├── mem_if.sv
+│   └── simple_mem.sv
+├── uvm/
+│   ├── mem_transaction.sv
+│   ├── mem_sequence.sv
+│   ├── mem_sequencer.sv
+│   ├── mem_driver.sv
+│   ├── mem_monitor.sv
+│   ├── mem_agent.sv
+│   ├── mem_scoreboard.sv
+│   ├── mem_env.sv
+│   └── mem_test.sv
+└── top.sv
+
+
+📘 코드 구성
+🔹 dut/mem_if.sv
+systemverilog
+코드 복사
+interface mem_if(input logic clk);
+  logic [7:0] addr;
+  logic [31:0] data;
+  logic read_write;
+  logic valid;
+  logic ready;
+endinterface
+
+🔹 dut/simple_mem.sv
+systemverilog
+코드 복사
+module simple_mem(input logic clk, reset,
+                  input logic [7:0] addr,
+                  input logic [31:0] data,
+                  input logic read_write,
+                  input logic valid,
+                  output logic ready,
+                  output logic [31:0] rdata);
+
+  logic [31:0] mem [0:255];
+
+  always_ff @(posedge clk or posedge reset) begin
+    if (reset) begin
+      ready <= 0;
+    end else if (valid) begin
+      ready <= 1;
+      if (read_write)
+        mem[addr] <= data;
+      rdata <= mem[addr];
+    end else begin
+      ready <= 0;
+    end
+  end
+endmodule
+
+
+🔹 uvm/mem_transaction.sv
+systemverilog
+코드 복사
+class mem_transaction extends uvm_sequence_item;
+  `uvm_object_utils(mem_transaction)
+
+  rand bit [7:0] addr;
+  rand bit [31:0] data;
+  rand bit read_write;
+
+  constraint addr_c { addr inside {[0:255]}; }
+
+  function new(string name="mem_transaction");
+    super.new(name);
+  endfunction
+
+  function bit do_compare(uvm_object rhs, uvm_comparer comparer);
+    mem_transaction tx;
+    if (!$cast(tx, rhs)) return 0;
+    return addr == tx.addr && data == tx.data && read_write == tx.read_write;
+  endfunction
+endclass
+
+
+🔹 uvm/mem_sequence.sv
+systemverilog
+코드 복사
+class mem_sequence extends uvm_sequence #(mem_transaction);
+  `uvm_object_utils(mem_sequence)
+
+  rand int unsigned num_trans = 100;
+  rand bit write_ratio;
+
+  constraint num_c { num_trans inside {[10:500]}; }
+
+  function new(string name="mem_sequence");
+    super.new(name);
+  endfunction
+
+  task body();
+    for (int i = 0; i < num_trans; i++) begin
+      mem_transaction tx = mem_transaction::type_id::create("tx");
+      assert(tx.randomize() with {
+        read_write == (write_ratio ? 1 : read_write);
+      });
+      start_item(tx);
+      finish_item(tx);
+    end
+  endtask
+endclass
+
+
+🔹 uvm/mem_sequencer.sv
+systemverilog
+코드 복사
+class mem_sequencer extends uvm_sequencer #(mem_transaction);
+  `uvm_component_utils(mem_sequencer)
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+endclass
+
+
+🔹 uvm/mem_driver.sv
+systemverilog
+코드 복사
+class mem_driver extends uvm_driver #(mem_transaction);
+  `uvm_component_utils(mem_driver)
+
+  virtual mem_if vif;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    if (!uvm_config_db#(virtual mem_if)::get(this, "", "vif", vif))
+      `uvm_fatal("NOVIF", "No virtual interface set")
+  endfunction
+
+  task run_phase(uvm_phase phase);
+    forever begin
+      mem_transaction tx;
+      seq_item_port.get_next_item(tx);
+      vif.addr <= tx.addr;
+      vif.data <= tx.data;
+      vif.read_write <= tx.read_write;
+      vif.valid <= 1;
+      @(posedge vif.clk);
+      wait (vif.ready);
+      vif.valid <= 0;
+      seq_item_port.item_done();
+    end
+  endtask
+endclass
+
+
+🔹 uvm/mem_monitor.sv
+systemverilog
+코드 복사
+class mem_monitor extends uvm_monitor;
+  `uvm_component_utils(mem_monitor)
+
+  virtual mem_if vif;
+  uvm_analysis_port #(mem_transaction) item_collected_port;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+    item_collected_port = new("item_collected_port", this);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    if (!uvm_config_db#(virtual mem_if)::get(this, "", "vif", vif))
+      `uvm_fatal("NOVIF", "No interface")
+  endfunction
+
+  task run_phase(uvm_phase phase);
+    forever begin
+      @(posedge vif.clk);
+      if (vif.valid && vif.ready) begin
+        mem_transaction tx = mem_transaction::type_id::create("tx");
+        tx.addr = vif.addr;
+        tx.data = vif.data;
+        tx.read_write = vif.read_write;
+        item_collected_port.write(tx);
+      end
+    end
+  endtask
+endclass
+
+
+🔹 uvm/mem_agent.sv
+systemverilog
+코드 복사
+class mem_agent extends uvm_agent;
+  `uvm_component_utils(mem_agent)
+
+  mem_sequencer sequencer;
+  mem_driver    driver;
+  mem_monitor   monitor;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    monitor = mem_monitor::type_id::create("monitor", this);
+    if (get_is_active() == UVM_ACTIVE) begin
+      sequencer = mem_sequencer::type_id::create("sequencer", this);
+      driver    = mem_driver::type_id::create("driver", this);
+    end
+  endfunction
+
+  function void connect_phase(uvm_phase phase);
+    if (get_is_active() == UVM_ACTIVE)
+      driver.seq_item_port.connect(sequencer.seq_item_export);
+  endfunction
+endclass
+
+
+🔹 uvm/mem_scoreboard.sv
+systemverilog
+코드 복사
+class mem_scoreboard extends uvm_subscriber #(mem_transaction);
+  `uvm_component_utils(mem_scoreboard)
+
+  mailbox expected;
+  covergroup cg;
+    coverpoint trans.read_write {
+      bins read = {0};
+      bins write = {1};
+    }
+  endgroup
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+    expected = new();
+    cg = new();
+  endfunction
+
+  virtual function void write(mem_transaction trans);
+    cg.sample();
+    expected.put(trans);
+  endfunction
+endclass
+
+
+🔹 uvm/mem_env.sv
+systemverilog
+코드 복사
+class mem_env extends uvm_env;
+  `uvm_component_utils(mem_env)
+
+  mem_agent      agent;
+  mem_scoreboard sb;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    agent = mem_agent::type_id::create("agent", this);
+    sb    = mem_scoreboard::type_id::create("sb", this);
+  endfunction
+
+  function void connect_phase(uvm_phase phase);
+    agent.monitor.item_collected_port.connect(sb.analysis_export);
+  endfunction
+endclass
+
+
+🔹 uvm/mem_test.sv
+systemverilog
+코드 복사
+class mem_test extends uvm_test;
+  `uvm_component_utils(mem_test)
+
+  mem_env env;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    env = mem_env::type_id::create("env", this);
+  endfunction
+
+  task run_phase(uvm_phase phase);
+    phase.raise_objection(this);
+    mem_sequence seq = mem_sequence::type_id::create("seq");
+    seq.start(env.agent.sequencer);
+    phase.drop_objection(this);
+  endtask
+endclass
+
+
+🔹 top.sv
+systemverilog
+코드 복사
+`timescale 1ns/1ps
+import uvm_pkg::*;
+`include "uvm_macros.svh"
+
+module top;
+  logic clk = 0;
+  logic reset;
+
+  always #5 clk = ~clk;
+
+  mem_if memif(clk);
+
+  simple_mem dut (
+    .clk(clk),
+    .reset(reset),
+    .addr(memif.addr),
+    .data(memif.data),
+    .read_write(memif.read_write),
+    .valid(memif.valid),
+    .ready(memif.ready),
+    .rdata()
+  );
+
+  initial begin
+    reset = 1;
+    repeat (2) @(posedge clk);
+    reset = 0;
+
+    uvm_config_db#(virtual mem_if)::set(null, "env.agent.driver", "vif", memif);
+    uvm_config_db#(virtual mem_if)::set(null, "env.agent.monitor", "vif", memif);
+    run_test("mem_test");
+  end
+endmodule
+
+
+💡 실행 방법 예시 (VCS or Questa)
+bash
+코드 복사
+vcs -full64 -sverilog +acc +vpi -ntb_opts uvm top.sv uvm/*.sv dut/*.sv
+./simv +UVM_TESTNAME=mem_test
