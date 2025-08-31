@@ -1,0 +1,137 @@
+1. Adder_4_bit UVM 프로젝트 파일
+https://adaptivesupport.amd.com/s/article/1070861?language=en_US
+Adder_4_bit 폴더 안에 README 를 읽어 보시오.
+
+How to Run using script : 
+  On windows
+  Vivado 2022.1 Tcl Shell 에서 실행
+     >  run_xsim.bat
+
+TCL commands for complete Vivado project flow :
+  On Windows/linux:
+  Vivado 2022.1 Tcl Shell 에서 실행 (실행 파일 안의FPGA package를 수정해야 한다)
+     > source run_prj.tcl
+
+
+2. (UMV_Vivado) Adder_4_bit(실행순서)
+  🔹 1단계: 테스트 진입점부터 흐름 파악
+ 
+  📄 파일: adder_4_bit_tb_top.sv
+  📌 이유: 시뮬레이션이 어디서 시작되고, 어떻게 UVM 환경으로 연결되는지 알 수 있습니다.
+ 
+  ▶️ 확인할 내용:
+ 
+  run_test(); 호출 위치
+ 
+  adder_4_bit_interface 생성 및 DUT 연결
+ 
+  uvm_config_db로 인터페이스 전달되는 부분
+ 
+ 
+ 
+  🔹 2단계: 테스트 클래스 (uvm_test)
+ 
+  📄 파일: adder_4_bit_basic_test.sv
+  📌 이유: 어떤 테스트 환경(env)을 생성하고 어떤 시퀀스를 실행하는지 확인해야 합니다.
+ 
+  ▶️ 확인할 내용:
+ 
+  build_phase() → 환경, 시퀀스 생성
+ 
+  run_phase() → seq.start(...)로 시퀀스 실행
+ 
+ 
+ 
+  🔹 3단계: 환경 구성 (uvm_env)
+ 
+  📄 파일: adder_4_bit_env.sv
+  📌 이유: 테스트 환경에 어떤 컴포넌트들이 있고, 어떻게 연결되어 있는지 이해합니다.
+ 
+  ▶️ 확인할 내용:
+ 
+  에이전트(agent), 리퍼런스 모델(ref_model), 커버리지(coverage), 스코어보드(scoreboard)
+ 
+  connect_phase()에서 포트 연결 흐름
+ 
+ 
+ 
+  🔹 4단계: 시퀀스와 트랜잭션 이해
+ 
+  📄 파일: adder_4_bit_basic_seq.sv
+  📌 이유: 어떤 입력값들이 DUT로 전달되는지를 알 수 있어야 합니다.
+ 
+  ▶️ 확인할 내용:
+ 
+  랜덤 트랜잭션 생성 req.randomize();
+ 
+  몇 번의 트랜잭션 수행? → for (int i=0; i<...; i++)
+ 
+  💡 참고: adder_4_bit_transaction 클래스도 함께 확인해야 합니다 (패키지 내 존재).
+ 
+ 
+ 
+  🔹 5단계: 에이전트 구성 요소 보기 (옵션)
+ 
+  📦 adder_4_bit_agent_pkg 안에 있는:
+ 
+  드라이버 (driver)
+ 
+  시퀀서 (sequencer)
+ 
+  모니터 (monitor)
+ 
+  📌 이유: 시퀀스가 실제로 DUT에 어떻게 전달되고, 출력이 어떻게 수집되는지 이해하려면 필요합니다.
+ 
+ 
+ 
+  🔹 6단계: Reference Model과 Scoreboard 확인
+ 
+  📄 파일:
+ 
+  adder_4_bit_ref_model (패키지에 포함)
+ 
+  adder_4_bit_scoreboard.sv
+ 
+  📌 이유:
+ 
+  Ref model이 기대 출력 생성
+ 
+  Scoreboard가 실제 DUT 출력과 비교하여 PASS/FAIL 판단
+ 
+ 
+ 
+  🔹 7단계: 커버리지 확인 (옵션)
+ 
+  📄 파일: adder_4_bit_coverage.sv
+  📌 이유: 기능적으로 충분히 테스트가 되었는지 판단할 수 있습니다.
+ 
+ 
+ 
+  🔁 추천 학습 루트 (요약 순서)
+ 
+  bash
+  코드 복사
+  1️⃣ adder_4_bit_tb_top.sv
+      ↓
+  2️⃣ adder_4_bit_basic_test.sv
+      ↓
+  3️⃣ adder_4_bit_env.sv
+      ↓
+  4️⃣ adder_4_bit_basic_seq.sv + adder_4_bit_transaction
+      ↓
+  5️⃣ agent 구성 (driver/sequencer/monitor)
+      ↓
+  6️⃣ ref_model & scoreboard
+      ↓
+  7️⃣ coverage
+ 
+ 
+ 
+  💡 TIP: 파악 포인트
+ 
+  트랜잭션 흐름: 시퀀서 → 드라이버 → DUT → 모니터 → 스코어보드/커버리지
+ 
+  비교 시점: Ref Model 출력 vs DUT 출력
+ 
+  디버깅 위치: Scoreboard 출력 로그(UVM_INFO, UVM_ERROR 등)
+
