@@ -1,0 +1,236 @@
+1. SystemVerilog 클래스(Class)
+
+1. 개념
+클래스는 **객체 지향 프로그래밍(OOP)**을 지원하기 위한 기본 단위입니다.
+데이터(멤버 변수)와 기능(멤버 함수)을 함께 캡슐화할 수 있습니다.
+동적 객체 생성이 가능하고, 상속, 다형성 등의 개념을 지원합니다.
+테스트벤치 작성에 많이 사용됩니다.
+
+2. 기본 문법
+class ClassName;
+  // 멤버 변수
+  int data;
+
+  // 생성자(Constructor)
+  function new(int init_val);
+    data = init_val;
+  endfunction
+
+  // 멤버 함수
+  function void display();
+    $display("data = %0d", data);
+  endfunction
+endclass
+
+
+3. 객체 생성과 사용
+module class_example;
+  initial begin
+    ClassName obj = new(10);  // 객체 생성, 생성자에 10 전달
+    obj.display();            // data = 10 출력
+  end
+endmodule
+
+
+4. 상속 (Inheritance)
+class Base;
+  function void greet();
+    $display("Hello from Base");
+  endfunction
+endclass
+
+class Child extends Base;
+  function void greet();
+    $display("Hello from Child");
+  endfunction
+endclass
+
+module test;
+  initial begin
+    Base b = new();
+    Child c = new();
+    Base bc;
+
+    b.greet();   // Base 객체 호출
+    c.greet();   // Child 객체 호출
+
+    bc = c;      // 업캐스팅 (Child -> Base 타입)
+    bc.greet();  // **Base 클래스 greet()가 호출됨!**
+  end
+endmodule
+
+
+결과
+Hello from Base
+Hello from Child
+Hello from Base
+
+설명
+b.greet(); 호출 → Base 클래스의 greet() 실행 → "Hello from Base"
+c.greet(); 호출 → Child 클래스의 greet() 실행 → "Hello from Child"
+bc = c; 로 Child 객체를 Base 타입 변수에 할당 (업캐스팅)
+bc.greet(); 호출 → 실제 객체는 Child 타입이지만, greet()가 virtual이 아니므로 Base 클래스 함수 호출이 아니라
+SystemVerilog에서는 부모 클래스 변수로 자식 객체 호출 시 가상함수(virtual)가 아니면 부모 함수가 호출되지만,
+위 예제에서는 greet()가 virtual이 아니므로, 부모 클래스 함수가 호출되는 것이 맞습니다.
+
+- virtual 함수가 있는 경우
+class Base;
+  virtual function void greet();
+
+결과
+Hello from Base
+Hello from Child
+Hello from Child
+설명:
+virtual 함수는 런타임에 호출될 함수가 결정되어서,
+부모 타입 변수지만 실제 객체 타입의 함수가 호출됩니다. (다형성) 
+
+5. 다형성 (Polymorphism)
+부모 클래스 타입 변수에 자식 클래스 객체를 할당할 수 있습니다.
+가상 함수(virtual function)를 사용하면 런타임에 적절한 함수가 호출됩니다.
+
+class Base;
+  virtual function void greet();
+    $display("Base greet");
+  endfunction
+endclass
+
+class Child extends Base;
+  function void greet();
+    $display("Child greet");
+  endfunction
+endclass
+
+module polymorphism_example;
+  initial begin
+    Base b = new();
+    Child c = new();
+
+    Base ref;
+
+    ref = b;
+    ref.greet();  // Base greet
+
+    ref = c;
+    ref.greet();  // Child greet (virtual function 덕분)
+  end
+endmodule
+
+
+6. 예상 출력 결과
+Base greet
+Child greet
+
+- virtual 이 없으면
+Base greet
+Base greet
+
+
+| 구분                                    | 부모 타입 변수로 자식 객체 호출 시 실행되는 함수  |
+| --------------------       | -----------------------------                              |
+| **virtual 함수가 없을 때** | 부모 클래스 함수 호출 (정적 바인딩)                       |
+| **virtual 함수가 있을 때** | 자식 클래스 함수 호출 (동적 바인딩, 다형성 구현) |
+
+
+2. 클래스 관련 기본 용어 
+
+용어 (Term)
+설명 (Description)
+SystemVerilog 예시/특징
+
+클래스 (Class)
+객체를 생성하기 위한 설계도 또는 타입
+class MyClass; ... endclass
+
+객체 (Object)
+클래스로부터 생성된 실체, 인스턴스
+MyClass obj = new();
+
+속성 (Attribute) / 멤버 변수 (Member variable)
+객체가 가지고 있는 데이터 또는 상태
+int data;, logic [7:0] addr;
+
+메서드 (Method) / 멤버 함수 (Member function)
+객체가 수행할 수 있는 동작 또는 함수
+function void do_something(); ... endfunction
+
+생성자 (Constructor)
+객체가 생성될 때 자동으로 호출되어 초기화 작업 수행하는 함수
+function new(); ... endfunction
+
+소멸자 (Destructor)
+객체가 소멸될 때 호출되는 함수 (SystemVerilog에서는 명시적 소멸자 없음)
+
+상속 (Inheritance)
+한 클래스가 다른 클래스로부터 속성, 메서드를 물려받는 기능
+class Child extends Parent;
+
+다형성 (Polymorphism)
+같은 함수 호출이 객체 타입에 따라 다르게 동작하는 성질
+virtual function 사용
+
+캡슐화 (Encapsulation)
+데이터와 메서드를 하나의 단위(클래스)로 묶고, 내부 구현 숨김
+멤버 변수와 메서드가 한 클래스에 포함됨
+
+인터페이스 (Interface)
+클래스와 객체가 상호작용하기 위한 표준화된 방법, 프로토콜
+SystemVerilog interface와는 다르지만 개념 유사
+
+추상 클래스 (Abstract Class)
+직접 인스턴스화 할 수 없고, 자식 클래스에서 반드시 구현해야 하는 함수가 있는 클래스
+pure virtual function 사용 가능
+
+가상 함수 (Virtual Function)
+부모 클래스에서 선언되어 자식 클래스에서 재정의 가능한 함수
+다형성 구현에 핵심
+
+인스턴스 변수 (Instance Variable)
+각 객체별로 독립적으로 존재하는 변수
+객체마다 값이 다름
+
+정적 변수 (Static Variable)
+클래스 전체에서 공유되는 변수
+static int count;
+
+클래스 변수 (Class Variable)
+정적 변수와 유사, 클래스 단위 공유 변수
+
+메서드 오버라이딩 (Method Overriding)
+자식 클래스가 부모 클래스 메서드를 재정의 하는 것
+function void greet(); 재정의 가능
+
+
+간단한 예시와 용어 매칭 
+
+class Animal;               // 클래스
+  string name;              // 속성(멤버 변수)
+  
+  // 생성자
+  function new(string nm);
+    name = nm;
+  endfunction
+  
+  // 가상 함수 (다형성 지원)
+  virtual function void speak();
+    $display("Animal sound");
+  endfunction
+endclass
+
+class Dog extends Animal;   // 상속
+  // 메서드 오버라이딩
+  function void speak();
+    $display("%s says: Woof!", name);
+  endfunction
+endclass
+
+module test;
+  initial begin
+    Animal a = new("Generic");
+    Dog d = new("Buddy");
+    
+    a.speak();  // Animal sound
+    d.speak();  // Buddy says: Woof!
+  end
+endmodule
+
